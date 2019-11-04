@@ -471,7 +471,8 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
             start_time = timer()
             time.sleep(5)
 
-            if timer() - last_checkpoint_time > 10 * 60:  # Save every 10 min.
+            # if timer() - last_checkpoint_time > 10 * 60:  # Save every 10 min.
+            if timer() - last_checkpoint_time > 10:  # Save every 10 min.
                 checkpoint()
                 last_checkpoint_time = timer()
 
@@ -506,6 +507,27 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
     checkpoint()
     plogger.close()
 
+from PIL import Image
+import numpy as np
+
+def resize_attention_map(attention_map):#, old_w, old_h, new_w, new_h):
+    """
+    Implementation 1: Make a Pillow image per channel, resize, to-numpy, concatenate, return.
+    Implementation 2: Roll your own without Pillow.
+
+    returns: Numpy array that is like attention_map, but sized at 210, 160.
+    """
+
+    assert attention_map.shape == (27,20,8)
+    resized_attention = np.zeros((210, 160, 8))
+    for k in range(8):
+        channel = attention_map[:,:,k]
+        im = Image(channel)
+        im = im.resize((210, 160))
+        im = np.array(im)
+        resized_attention[:,:,k] = im
+
+    return resized_attention
 
 def test(flags, num_episodes: int = 10):
     if flags.xpid is None:
@@ -525,11 +547,23 @@ def test(flags, num_episodes: int = 10):
     observation = env.initial()
     returns = []
 
+    video_frames = []
+    attention_frames = []
+
     while len(returns) < num_episodes:
         if flags.mode == "test_render":
             env.gym_env.render()
         agent_outputs = model(observation)
         policy_outputs, _ = agent_outputs
+
+        print(policy_outputs["frame"].shape)
+        print(observation["frame"].shape)
+        if flags.mode == "write_videos":
+            print("writing videos")
+            video_frames.append(policy_outputs["frame"])
+            single_attention_frame = resize_attention_map(policy_outputs["attention_map"])
+            attention_frames.append(single_attention_frame)
+
         observation = env.step(policy_outputs["action"])
         if observation["done"].item():
             returns.append(observation["episode_return"].item())

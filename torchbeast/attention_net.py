@@ -205,10 +205,20 @@ class AttentionNet(nn.Module):
         # Create tuple of next states.
         next_state = next_core_state + next_vision_state
         return (
-            dict(policy_logits=policy_logits, baseline=baseline, action=action),
+            dict(
+                policy_logits=policy_logits,
+                baseline=baseline,
+                action=action, 
+                attention_map=A,
+                frame=inputs["frame"]),
             next_state,
         )
 
+
+# def update_frames(attention_map, frame):
+#     """Writes """
+#     attent
+#     pass
 
 class ConvLSTMCell(nn.Module):
     def __init__(self, input_channels, hidden_channels, kernel_size):
