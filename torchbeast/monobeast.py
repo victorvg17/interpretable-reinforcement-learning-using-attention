@@ -43,7 +43,7 @@ parser = argparse.ArgumentParser(description="PyTorch Scalable Agent")
 parser.add_argument("--env", type=str, default="Seaquest-v0",
                     help="Gym environment.")
 parser.add_argument("--mode", default="train",
-                    choices=["train", "test", "test_render"],
+                    choices=["train", "test", "test_render", "write_videos"],
                     help="Training or test mode.")
 parser.add_argument("--xpid", default=None,
                     help="Experiment id (default: None).")
@@ -471,8 +471,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
             start_time = timer()
             time.sleep(5)
 
-            # if timer() - last_checkpoint_time > 10 * 60:  # Save every 10 min.
-            if timer() - last_checkpoint_time > 10:  # Save every 10 min.
+            if timer() - last_checkpoint_time > 10 * 60:  # Save every 10 min.
                 checkpoint()
                 last_checkpoint_time = timer()
 
@@ -532,10 +531,19 @@ def resize_attention_map(attention_map):#, old_w, old_h, new_w, new_h):
 def test(flags, num_episodes: int = 10):
     if flags.xpid is None:
         checkpointpath = "./latest/model.tar"
+        videopath = "./latest/vid_array.npy"
+        attentionpath = "./latest/attention_array.npy"
     else:
         checkpointpath = os.path.expandvars(
             os.path.expanduser("%s/%s/%s" % (flags.savedir, flags.xpid, "model.tar"))
         )
+        videopath = os.path.expandvars(
+            os.path.expanduser("%s/%s/%s" % (flags.savedir, flags.xpid, "vid_array.npy"))
+        )
+        attentionpath = os.path.expandvars(
+            os.path.expanduser("%s/%s/%s" % (flags.savedir, flags.xpid, "attention_array.npy"))
+        )
+
 
     gym_env = create_env(flags)
     env = environment.Environment(gym_env)
@@ -572,6 +580,16 @@ def test(flags, num_episodes: int = 10):
                 observation["episode_step"].item(),
                 observation["episode_return"].item(),
             )
+
+    if flags.mode == "write_videos":
+        # Save numpy arrays, so we can make videos somewhere else.
+        video_frames = np.asarray(video_frames)
+        with open(videopath, "wb") as f:
+            np.save(f, video_frames)
+        attention_frames = np.asarray(attention_frames)
+        with open(attentionpath, "wb") as f:
+            np.save(f, attention_frames)
+
     env.close()
     logging.info(
         "Average returns over %i steps: %.1f", num_episodes, sum(returns) / len(returns)
