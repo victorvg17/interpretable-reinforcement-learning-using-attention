@@ -558,10 +558,13 @@ def test(flags, num_episodes: int = 10):
     video_frames = []
     attention_frames = []
 
+    hidden_state = model.initial_state(batch_size=1)
+
     while len(returns) < num_episodes:
         if flags.mode == "test_render":
             env.gym_env.render()
-        agent_outputs = model(observation)
+        agent_outputs, new_hidden_state = model(observation, hidden_state)
+        hidden_state = new_hidden_state
         policy_outputs, _ = agent_outputs
 
         print(policy_outputs["frame"].shape)
@@ -580,6 +583,7 @@ def test(flags, num_episodes: int = 10):
                 observation["episode_step"].item(),
                 observation["episode_return"].item(),
             )
+            hidden_state = model.initial_state(batch_size=1)
 
     if flags.mode == "write_videos":
         # Save numpy arrays, so we can make videos somewhere else.
