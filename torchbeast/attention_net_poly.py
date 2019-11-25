@@ -20,9 +20,7 @@ AttentionNet is a pytorch reimpl. of the following paper for the NeurIPS reprodu
 class AttentionNet(nn.Module):
     def __init__(
         self,
-        __obseravation_num_channels: int,
         num_actions: int,
-        __use_lstm: bool,
         hidden_size: int = 256,
         c_v: int = 120,
         c_k: int = 8,
@@ -57,8 +55,8 @@ class AttentionNet(nn.Module):
             nn.Linear(
                 self.num_values * num_queries
                 + self.num_keys * num_queries
-                + 1
-                + self.num_actions,
+                + 1,
+                # NOTE: libtorch does not support last_action, so rm `+ self.num_actions`
                 hidden_size * 2,  # 512, HP from the authors.
             ),
             nn.ReLU(),
@@ -70,10 +68,15 @@ class AttentionNet(nn.Module):
         self.values_head = nn.Sequential(nn.Linear(hidden_size, 1))
 
     def initial_state(self, batch_size):
-        core_zeros = torch.zeros(batch_size, self.hidden_size).float()
+        # NOTE: We add an empty dimension to each state matrix in order
+        # to align our API with PolyBeast dynamic batching.
+        core_zeros = torch.zeros(
+            batch_size, 
+            self.hidden_size
+        ).float().unsqueeze(0)
         conv_zeros = torch.zeros(
             batch_size, self.hidden_size // 2, self.height, self.width
-        ).float()
+        ).float().unsqueeze(0)
         return (
             core_zeros.clone(),  # hidden for policy core
             core_zeros.clone(),  # cell for policy core
@@ -82,6 +85,10 @@ class AttentionNet(nn.Module):
         )
 
     def forward(self, inputs, prev_state):
+        # NOTE: We add an empty dimension to each state matrix in order
+        # to align our API with PolyBeast dynamic batching.
+        # Here we squeeze that dimension out. (We will unsqueeze output as well.)
+        prev_state = tuple(s.squeeze(0) for s in prev_state)
 
         # 1 (a). Vision.
         # --------------
@@ -114,11 +121,12 @@ class AttentionNet(nn.Module):
         # -> [T, B, 1]
         notdone = (~inputs["done"]).float().view(T, B, 1)
         # -> [T, B, 1, num_actions]
-        prev_action = (
-            F.one_hot(inputs["last_action"].view(T * B), self.num_actions)
-            .view(T, B, 1, self.num_actions)
-            .float()
-        )
+        # NOTE: libtorchbeast does not support last_action.
+        # prev_action = (
+        #     F.one_hot(inputs["last_action"].view(T * B), self.num_actions)
+        #     .view(T, B, 1, self.num_actions)
+        #     .float()
+        # )
         # -> [T, B, 1, 1]
         prev_reward = torch.clamp(inputs["reward"], -1, 1).view(T, B, 1, 1)
 
@@ -126,11 +134,11 @@ class AttentionNet(nn.Module):
         # ---------------------------------
         # NOTE: T = 1 when 'act'ing and T > 1 when 'learn'ing.
 
-        for K_t, V_t, prev_reward_t, prev_action_t, nd_t in zip(
+        for K_t, V_t, prev_reward_t, nd_t in zip( # prev_action_t
             K.unbind(),
             V.unbind(),
             prev_reward.unbind(),
-            prev_action.unbind(),
+            # prev_action.unbind(),
             notdone.unbind(),
         ):
 
@@ -155,7 +163,7 @@ class AttentionNet(nn.Module):
             chunks = list(
                 torch.chunk(answers, self.num_queries, dim=1)
                 + torch.chunk(Q_t, self.num_queries, dim=1)
-                + (prev_reward_t.float(), prev_action_t.float())
+                + (prev_reward_t.float(),)
             )
             answer = torch.cat(chunks, dim=2).squeeze(1)
             # [B, Z] -> [B, hidden_size]
@@ -201,10 +209,12 @@ class AttentionNet(nn.Module):
         # Create tuple of next states.
         next_state = next_core_state + next_vision_state
 
+        # NOTE: We add an empty dimension to each state matrix in order
+        # to align our API with PolyBeast dynamic batching.
+        next_state = tuple(s.unsqueeze(0) for s in next_state)
+
         # NOTE: Polybeast changes the output format to a tuple.
-        return tuple(
-            (action, policy_logits, baseline), next_state,
-        )
+        return (action, policy_logits, baseline), next_state
 
 
 class ConvLSTMCell(nn.Module):
