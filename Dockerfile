@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:experimental
-FROM nvidia/cuda:10.1-base-ubuntu18.04
+FROM nvidia/cuda:10.1-cudnn7-runtime-ubuntu18.04
+# nvidia/cuda:10.1-base-ubuntu18.04
 # ubuntu:18.04
 
 SHELL ["/bin/bash", "-c"]
