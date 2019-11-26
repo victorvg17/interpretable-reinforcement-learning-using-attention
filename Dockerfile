@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:experimental
-FROM ubuntu:18.04
+FROM nvidia/cuda:10.1-base-ubuntu18.04
+# ubuntu:18.04
 
 SHELL ["/bin/bash", "-c"]
 
@@ -90,6 +91,8 @@ ENV LD_LIBRARY_PATH ${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH}
 RUN python setup.py install
 
 ENV OMP_NUM_THREADS 1
+
+# CMD ["nvidia-smi"]
 
 # Small Run.
 CMD ["bash", "-c", "python -m torchbeast.polybeast \

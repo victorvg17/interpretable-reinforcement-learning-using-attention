@@ -413,6 +413,7 @@ def train(flags):
         flags.learner_device = torch.device("cuda:0")
         flags.actor_device = torch.device("cuda:1")
     else:
+        logging.info(f"cuda available: {torch.cuda.is_available()}")
         logging.info("Not using CUDA.")
         flags.learner_device = torch.device("cpu")
         flags.actor_device = torch.device("cpu")
