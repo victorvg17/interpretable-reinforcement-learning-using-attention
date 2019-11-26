@@ -557,6 +557,24 @@ def train(flags):
             checkpointpath,
         )
 
+    def checkpoint_step(step):
+        if flags.disable_checkpoint:
+            return
+        checkpointpath_step = os.path.expandvars(
+            os.path.expanduser(f"{flags.savedir}/{flags.xpid}/model_{step}.tar")
+        )
+        logging.info("Saving step checkpoint to %s", checkpointpath_step)
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "stats": stats,
+                "flags": vars(flags),
+            },
+            checkpointpath_step,
+        )
+
     def format_value(x):
         return f"{x:1.5}" if isinstance(x, float) else str(x)
 
@@ -567,13 +585,17 @@ def train(flags):
             start_step = stats.get("step", 0)
             if start_step >= flags.total_steps:
                 break
-            time.sleep(5)
+            time.sleep(60)
             end_step = stats.get("step", 0)
 
             if timeit.default_timer() - last_checkpoint_time > 10 * 60:
-                # Save every 10 min.
+                # Save lastest model every 10 min.
                 checkpoint()
                 last_checkpoint_time = timeit.default_timer()
+
+            if (end_step % (flags.total_steps // 10)) == 0:
+                # Save step model every 10% of the way during training.
+                checkpoint_step(end_step)
 
             logging.info(
                 "Step %i @ %.1f SPS. Inference batcher size: %i."
