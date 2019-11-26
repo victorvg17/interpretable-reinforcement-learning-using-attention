@@ -61,7 +61,7 @@ ENV BASH_ENV /root/.bashrc
 # # RUN pip install torch*.whl
 
 # Add LAPACK support (?)
-RUN conda install -c pytorch magma-cuda101
+RUN conda install -y -c pytorch magma-cuda101
 
 RUN git clone --single-branch --branch v1.2.0 --recursive https://github.com/pytorch/pytorch
 
