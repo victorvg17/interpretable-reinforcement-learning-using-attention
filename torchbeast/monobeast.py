@@ -348,7 +348,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
 
     env = create_env(flags)
 
-    model = Net(num_actions=env.action_space)
+    model = Net(num_actions=env.action_space.n)
     buffers = create_buffers(flags, env.observation_space.shape, model.num_actions)
 
     model.share_memory()
