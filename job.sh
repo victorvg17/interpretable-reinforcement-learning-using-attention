@@ -4,7 +4,6 @@
 #$ -l gpus=1
 #$ -e ./logs/
 #$ -o ./logs/
-. ./torchbeast_venv/bin/activate
 mkdir -p ./logs/
 mkdir -p ./runs/
 mkdir -p ./output/
@@ -13,7 +12,6 @@ python -m torchbeast.monobeast \
        --xpid cpu \
        --num_actors 10 \
        --num_threads 2 \
-       --num_inference_threads 8 \
        --total_steps 2_000_000_000 \
        --learning_rate 0.0002 \
        --grad_norm_clipping 1280 \

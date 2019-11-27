@@ -35,7 +35,6 @@ class AttentionNet(nn.Module):
         to start if we find the results don't replicate.
         """
         super(AttentionNet, self).__init__()
-
         self.num_queries = num_queries
         self.num_actions = num_actions
         self.hidden_size = hidden_size

@@ -485,15 +485,15 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         while step < flags.total_steps:
             start_step = step
             start_time = timer()
-            time.sleep(5)
+            time.sleep(30)
 
             if timer() - last_checkpoint_time > 10 * 60:  # Save every 10 min.
                 checkpoint()
                 last_checkpoint_time = timer()
 
-            if (end_step % (flags.total_steps // 10)) == 0:
+            if (start_step % (flags.total_steps // 10)) == 0:
                 # Save step model every 10% of the way during training.
-                checkpoint_step(end_step)
+                checkpoint_step(start_step)
 
             sps = (step - start_step) / (timer() - start_time)
             if stats.get("episode_returns", None):
