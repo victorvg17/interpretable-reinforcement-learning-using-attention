@@ -461,6 +461,24 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
             checkpointpath,
         )
 
+    def checkpoint_step(step):
+        if flags.disable_checkpoint:
+            return
+        checkpointpath_step = os.path.expandvars(
+            os.path.expanduser(f"{flags.savedir}/{flags.xpid}/model_{step}.tar")
+        )
+        logging.info("Saving step checkpoint to %s", checkpointpath_step)
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "stats": stats,
+                "flags": vars(flags),
+            },
+            checkpointpath_step,
+        )
+
     timer = timeit.default_timer
     try:
         last_checkpoint_time = timer()
@@ -472,6 +490,10 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
             if timer() - last_checkpoint_time > 10 * 60:  # Save every 10 min.
                 checkpoint()
                 last_checkpoint_time = timer()
+
+            if (end_step % (flags.total_steps // 10)) == 0:
+                # Save step model every 10% of the way during training.
+                checkpoint_step(end_step)
 
             sps = (step - start_step) / (timer() - start_time)
             if stats.get("episode_returns", None):
