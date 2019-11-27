@@ -85,7 +85,7 @@ class AttentionNet(nn.Module):
             conv_zeros.clone(),  # cell for vision lstm
         )
 
-    def forward(self, inputs, prev_state):
+    def forward(self, inputs, prev_state, include_attention=False):
 
         # 1 (a). Vision.
         # --------------
@@ -204,15 +204,16 @@ class AttentionNet(nn.Module):
 
         # Create tuple of next states.
         next_state = next_core_state + next_vision_state
-        return (
-            dict(
-                policy_logits=policy_logits,
-                baseline=baseline,
-                action=action, 
-                attention_map=A,
-                frame=inputs["frame"]),
-            next_state,
-        )
+        dict_to_return =  dict(
+            policy_logits=policy_logits,
+            baseline=baseline,
+            action=action, 
+            frame=inputs["frame"])
+
+        if include_attention:
+            dict_to_return['attention_map'] = A
+
+        return (dict_to_return, next_state, )
 
 
 # def update_frames(attention_map, frame):

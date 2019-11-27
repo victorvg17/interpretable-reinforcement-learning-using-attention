@@ -69,6 +69,8 @@ parser.add_argument("--disable_cuda", action="store_true",
                     help="Disable CUDA.")
 parser.add_argument("--use_lstm", action="store_true",
                     help="Use LSTM in agent model.")
+parser.add_argument("--save_every", default=10*60,
+                    type=int, help="Save a model every this many seconds. Short values helpful for prototyping.")
 
 # Loss settings.
 parser.add_argument("--entropy_cost", default=0.0006,
@@ -471,7 +473,7 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
             start_time = timer()
             time.sleep(5)
 
-            if timer() - last_checkpoint_time > 10 * 60:  # Save every 10 min.
+            if timer() - last_checkpoint_time > flags.save_every:
                 checkpoint()
                 last_checkpoint_time = timer()
 
@@ -514,21 +516,34 @@ def resize_attention_map(attention_map):#, old_w, old_h, new_w, new_h):
     Implementation 1: Make a Pillow image per channel, resize, to-numpy, concatenate, return.
     Implementation 2: Roll your own without Pillow.
 
-    returns: Numpy array that is like attention_map, but sized at 210, 160.
+    returns: Numpy array that is like attention_map, but sized at 210, 160 x num_channels.
     """
+    attention_map = attention_map.squeeze(0)
+    attention_map = attention_map.detach().numpy()
 
-    assert attention_map.shape == (27,20,8)
-    resized_attention = np.zeros((210, 160, 8))
-    for k in range(8):
+    assert attention_map.shape == (27,20,4)
+    resized_attention = np.zeros((210, 160, 4))
+    for k in range(4):
         channel = attention_map[:,:,k]
-        im = Image(channel)
-        im = im.resize((210, 160))
+        im = Image.fromarray(channel)
+        # im = im.resize((210, 160))
+        im = im.resize((160, 210)) # Not sure why this needs to be backwards.
         im = np.array(im)
         resized_attention[:,:,k] = im
 
     return resized_attention
 
 def test(flags, num_episodes: int = 10):
+    """
+    These videos can be unbelievably long, so we need a way to limit the number of frames
+    we write. Otherwise we may run out of memory. Limit on my 8GB machine is under 1000...
+
+    TODO: See if we can make the video part more memory efficient.
+    """
+
+    VIDEO_MAX_LENGTH = 500 # TODO: Maybe make this a flag?
+    INCLUDE_ATTENTION = (flags.mode == 'write_videos')
+
     if flags.xpid is None:
         checkpointpath = "./latest/model.tar"
         videopath = "./latest/vid_array.npy"
@@ -545,6 +560,9 @@ def test(flags, num_episodes: int = 10):
         )
 
 
+    if flags.mode == 'write_videos' and num_episodes != 1:
+        raise Exception("It only makes sense to write one video at a time!")
+
     gym_env = create_env(flags)
     env = environment.Environment(gym_env)
     model = Net(gym_env.observation_space.shape, gym_env.action_space.n, flags.use_lstm)
@@ -560,18 +578,31 @@ def test(flags, num_episodes: int = 10):
 
     hidden_state = model.initial_state(batch_size=1)
 
+    num_frames = 0
     while len(returns) < num_episodes:
+        num_frames += 1
+        if num_frames % 50 == 0:
+            print(f"Frame {num_frames}")
         if flags.mode == "test_render":
             env.gym_env.render()
-        agent_outputs, new_hidden_state = model(observation, hidden_state)
+        agent_outputs, new_hidden_state = model(observation,
+            hidden_state, include_attention=INCLUDE_ATTENTION)
         hidden_state = new_hidden_state
-        policy_outputs, _ = agent_outputs
 
-        print(policy_outputs["frame"].shape)
-        print(observation["frame"].shape)
+        policy_outputs = agent_outputs
+
         if flags.mode == "write_videos":
-            print("writing videos")
-            video_frames.append(policy_outputs["frame"])
+            if num_frames == VIDEO_MAX_LENGTH:
+                print("Breaking loop because max video size has been reached")
+                break
+
+            # skvideo expects WxHxC, so we need to re-order.
+            properly_shaped_frame = policy_outputs["frame"].numpy().squeeze()
+            properly_shaped_frame = \
+                np.transpose(properly_shaped_frame, (1,2,0))
+            assert properly_shaped_frame.shape[-1] == 3
+            video_frames.append(properly_shaped_frame)
+
             single_attention_frame = resize_attention_map(policy_outputs["attention_map"])
             attention_frames.append(single_attention_frame)
 
@@ -588,16 +619,20 @@ def test(flags, num_episodes: int = 10):
     if flags.mode == "write_videos":
         # Save numpy arrays, so we can make videos somewhere else.
         video_frames = np.asarray(video_frames)
+        video_frames = video_frames.squeeze() # Not sure I need this anymore?
         with open(videopath, "wb") as f:
             np.save(f, video_frames)
         attention_frames = np.asarray(attention_frames)
         with open(attentionpath, "wb") as f:
             np.save(f, attention_frames)
+        print("Videos written!")
 
     env.close()
-    logging.info(
-        "Average returns over %i steps: %.1f", num_episodes, sum(returns) / len(returns)
-    )
+    if flags.mode != 'write_videos':
+        # Because we may not complete an episode...
+        logging.info(
+            "Average returns over %i steps: %.1f", num_episodes, sum(returns) / len(returns)
+        )
 
 
 class AtariNet(nn.Module):
@@ -716,7 +751,7 @@ def main(flags):
     if flags.mode == "train":
         train(flags)
     else:
-        test(flags)
+        test(flags, num_episodes=1)
 
 
 if __name__ == "__main__":
