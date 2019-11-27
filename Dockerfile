@@ -74,11 +74,10 @@ RUN git submodule update --init --recursive
 
 # Added (referencing https://github.com/pytorch/pytorch/blob/master/docker/pytorch/Dockerfile)
 RUN TORCH_CUDA_ARCH_LIST="3.5 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
-    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
-    pip install -v .
+    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
+#     pip install -v .
 
-# I think `pip install -v .` replaces `python setup.py install`.
-# RUN python setup.py install
+RUN python setup.py install
 
 # Clone TorchBeast.
 WORKDIR /src/torchbeast
