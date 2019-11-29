@@ -537,7 +537,7 @@ def test(flags, num_episodes: int = 10):
 
     gym_env = create_env(flags)
     env = environment.Environment(gym_env)
-    model = Net(num_actions=env.action_space)
+    model = Net(num_actions=env.action_space.n)
     model.eval()
     checkpoint = torch.load(checkpointpath, map_location="cpu")
     model.load_state_dict(checkpoint["model_state_dict"])
