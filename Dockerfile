@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:experimental
-FROM nvidia/cuda:10.1-cudnn7-runtime-ubuntu18.04
+#FROM nvidia/cuda:10.1-cudnn7-runtime-ubuntu18.04
 # nvidia/cuda:10.1-base-ubuntu18.04
 # ubuntu:18.04
+FROM nvcr.io/nvidia/pytorch:19.10-py3
 
 SHELL ["/bin/bash", "-c"]
 
@@ -17,13 +18,13 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /src
 
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+#RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 
-RUN bash Miniconda3-latest-Linux-x86_64.sh -b
+#RUN bash Miniconda3-latest-Linux-x86_64.sh -b
 
-ENV PATH /root/miniconda3/bin:$PATH
+#ENV PATH /root/miniconda3/bin:$PATH
 
-ENV CONDA_PREFIX /root/miniconda3/envs/torchbeast
+ENV CONDA_PREFIX /opt/conda/envs/torchbeast
 
 # Clear .bashrc (it refuses to run non-interactively otherwise).
 RUN echo > ~/.bashrc
@@ -32,7 +33,9 @@ RUN echo > ~/.bashrc
 RUN conda init bash
 
 # Create new environment and install some dependencies.
-RUN conda create -y -n torchbeast python=3.7 \
+RUN conda create --clone base -n torchbeast
+#RUN conda install -y -n torchbeast \
+RUN conda install -y -n torchbeast \
     protobuf \
     numpy \
     ninja \
@@ -52,6 +55,9 @@ ENV BASH_ENV /root/.bashrc
 
 # Install PyTorch.
 
+########## SAM STUFF ##########
+### WE DONT NEED THIS BECAUSE WE HAVE IT IN THE BASE REPO
+
 # Would like to install PyTorch via pip. Unfortunately, there's binary
 # incompatability issues (https://github.com/pytorch/pytorch/issues/18128).
 # Otherwise, this would work:
@@ -61,23 +67,24 @@ ENV BASH_ENV /root/.bashrc
 # # RUN pip install torch*.whl
 
 # Added (referencing https://github.com/pytorch/pytorch/blob/master/docker/pytorch/Dockerfile)
-RUN conda install -y -c pytorch magma-cuda101
+###RUN conda install -y -c pytorch magma-cuda101
 
-RUN git clone --single-branch --branch v1.2.0 --recursive https://github.com/pytorch/pytorch
+###RUN git clone --single-branch --branch v1.2.0 --recursive https://github.com/pytorch/pytorch
 
-WORKDIR /src/pytorch
+###WORKDIR /src/pytorch
 
+# EXCEPT THIS
 ENV CMAKE_PREFIX_PATH ${CONDA_PREFIX}
 
 # Added (referencing https://github.com/pytorch/pytorch/blob/master/docker/pytorch/Dockerfile)
-RUN git submodule update --init --recursive
+###RUN git submodule update --init --recursive
 
 # Added (referencing https://github.com/pytorch/pytorch/blob/master/docker/pytorch/Dockerfile)
-RUN TORCH_CUDA_ARCH_LIST="3.5 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
-    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
+###RUN TORCH_CUDA_ARCH_LIST="3.5 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
+###    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
 #     pip install -v .
 
-RUN python setup.py install
+###RUN python setup.py install
 
 # Clone TorchBeast.
 WORKDIR /src/torchbeast
