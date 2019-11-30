@@ -410,9 +410,15 @@ def train(flags):
 
     if not flags.disable_cuda and torch.cuda.is_available():
         logging.info("Using CUDA.")
-        logging.info("PUTTING ON SAME GPU BECAUSE WE ONLY HAVE ONE")
-        flags.learner_device = torch.device("cuda:0")
-        flags.actor_device = torch.device("cuda:0")
+        #logging.info("PUTTING ON SAME GPU BECAUSE WE ONLY HAVE ONE")
+        if torch.cuda.device_count() == 1:
+            print("Putting it on one GPU because theres only one")
+            flags.learner_device = torch.device("cuda:0")
+            flags.actor_device = torch.device("cuda:0")
+        else:
+            print("Putting it on two GPUs because there are more than one")
+            flags.learner_device = torch.device("cuda:0")
+            flags.actor_device = torch.device("cuda:1")
         #flags.actor_device = torch.device("cuda:1")
     else:
         logging.info(f"cuda available: {torch.cuda.is_available()}")
