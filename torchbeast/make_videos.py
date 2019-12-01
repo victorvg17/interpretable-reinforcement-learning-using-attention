@@ -1,6 +1,8 @@
 """
 Purpose:
     Load video + attention maps from trained model. Create video.
+
+We're going to have a global FLAGS variable
 """
 
 import numpy as np
@@ -19,7 +21,7 @@ parser.add_argument("--savedir", default="~/logs/torchbeast",
 
 
 
-def main(directory):
+def main(*, directory):
     """
     Loads video and attention arrays, combines them together, and then writes to a video file
     in the same directory.
@@ -27,6 +29,8 @@ def main(directory):
     Arguments:
         directory:
             The directory created by torchbeast to store models and logs
+        flags:
+            argparse flags passed to program.
 
     TODO: The video could be improved. Also, it would be nice to choose the head, or make a video
           with more than one head. Also, maybe naming the video to keep track of different videos
@@ -34,7 +38,6 @@ def main(directory):
     """
     vid_filename = os.path.join(directory, "vid_array.npy")
     att_filename = os.path.join(directory, "attention_array.npy")
-    real_vid_filename = os.path.join(directory, "video.mp4")
 
     with open(vid_filename, "rb") as f:
         vid_frames = np.load(f)
@@ -42,15 +45,21 @@ def main(directory):
     with open(att_filename, "rb") as f:
         att_frames = np.load(f)
 
-    augmented_frames = make_video(vid_frames, att_frames)
-    # augmented_frames *= 255
-    augmented_frames = augmented_frames.astype(np.uint8)
+    num_attention_channels = att_frames.shape[-1]
+    print(f"Num attention channels: {num_attention_channels}")
 
-    skvideo.io.vwrite(real_vid_filename, augmented_frames)
+    for head in range(num_attention_channels):
+        print(f"Writing head {head}")
+        real_vid_filename = os.path.join(directory, f"video_{head}.mp4")
+        augmented_frames = make_video(vid_frames, att_frames, head_number=head)
+        # augmented_frames *= 255
+        augmented_frames = augmented_frames.astype(np.uint8)
+
+        skvideo.io.vwrite(real_vid_filename, augmented_frames)
 
 
 
-def make_video(video_frames, attention_frames):
+def make_video(video_frames, attention_frames, head_number):
     """
     http://www.scikit-video.org/stable/io.html#writing
     """
@@ -79,26 +88,40 @@ def make_video(video_frames, attention_frames):
     for i in range(num_frames):
         frame = video_frames[i]
         head = attention_frames[i]
-        new_frame = make_frame(frame, head)
+        new_frame = make_frame(frame, head, head_number=head_number)
         augmented_frames[i,:,:,:] = new_frame
 
     return augmented_frames
 
 
-def make_frame(video_frame, attention_frame):
-    first_head = attention_frame[:,:,0]
-    return make_frame_from_one_attention_head(video_frame, first_head)
+def make_frame(video_frame, attention_frame, head_number=0):
+    head_of_interest = attention_frame[:,:,head_number]
+    return make_frame_from_one_attention_head(video_frame, head_of_interest)
 
 
-def scale_attention_head(attention_head):
+def scale_attention_head(attention_head, min_scale=0.2):
     """
     Attention head sums to 1, meaning every entry is very small.
     We don't want to make a black image, so we scale it so its min
     is 0 and and its max is 1.
+
+    Arguments:
+        attention_head:
+            Something shaped like the image that's probably
+            full of small numbers
+        min_scale:
+            Float between 0 and 1 that says the DARKEST it should
+            scale the background. If it's 0, you really don't know what's
+            going on.
     """
+    assert 0 <= min_scale <= 1 
+
     min_val = attention_head.min()
     max_val = attention_head.max()
+    # First, scale the attention head from 0 to 1.
     attention_head = (attention_head - min_val) / (max_val - min_val)
+    # Now, add in a base amount of vision
+    attention_head = (((1 - min_scale) * attention_head) + min_scale)
     return attention_head
 
 def make_frame_from_one_attention_head(video_frame, attention_head):
@@ -120,8 +143,8 @@ def make_frame_from_one_attention_head(video_frame, attention_head):
 
 if __name__ == "__main__":
     # Creates the directory the same way that torchbeast does.
-    flags = parser.parse_args()
+    FLAGS = parser.parse_args()
     directory = os.path.expandvars(
-            os.path.expanduser("%s/%s" % (flags.savedir, flags.xpid)))
+            os.path.expanduser("%s/%s" % (FLAGS.savedir, FLAGS.xpid)))
 
     main(directory=directory)
