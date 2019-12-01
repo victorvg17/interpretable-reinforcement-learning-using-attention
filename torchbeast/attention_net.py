@@ -28,11 +28,6 @@ class AttentionNet(nn.Module):
         num_queries: int = 4,
     ):
         """AttentionNet implementing the attention agent.
-
-        NOTE: Because we use TorchBeast and they format the Atari frames to have a different shape (84x84),
-        the downstream sizes for some things change compared to the original paper. Mainly, the height
-        and width the resulting keys, queries, values are 17 by 17, not 27 by 20. This may be a good place
-        to start if we find the results don't replicate.
         """
         super(AttentionNet, self).__init__()
         self.num_queries = num_queries
@@ -160,7 +155,6 @@ class AttentionNet(nn.Module):
 
             # C. Policy.
             # ----------
-
             # NOTE: nd_t is 0 when episode is done, 1 otherwise. Thus, this resets the state
             # as episodes finish.
             core_state = tuple((nd_t * s) for s in core_state)
@@ -202,7 +196,153 @@ class AttentionNet(nn.Module):
             next_state,
         )
 
+class VisionNetwork(nn.Module):
+    def __init__(self):
+        super(VisionNetwork, self).__init__()
+        self.cnn = nn.Sequential(
+            # NOTE: The padding choices were not in the paper details, but result in the sizes
+            # mentioned by the authors. We should review these.
+            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=8, stride=4, padding=(1,2)),
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=(2,1)),
+        )
+        self.lstm = ConvLSTMCell(input_channels=64, hidden_channels=128, kernel_size=3)
 
+    def forward(self, X, inputs, vision_lstm_state):
+        T, B, *_ = X.size()
+        X = torch.flatten(X, 0, 1).float()
+        X = self.cnn(X)
+        _, C, H, W = X.size()
+        X = X.view(T, B, C, H, W)
+        output_list = []
+        notdone = (~inputs["done"]).float()
+
+        # Operating over T:
+        for X_t, nd in zip(X.unbind(), notdone.unbind()):
+            # This vector is all 0 if the episode just finished, so it will reset the hidden
+            # state as needed.
+            nd = nd.view(B, 1, 1, 1)
+            vision_lstm_state = tuple((nd * s) for s in vision_lstm_state)
+
+            O_t, vision_state = self.lstm(X_t, vision_lstm_state)
+            output_list.append(O_t)
+        next_vision_state = vision_state
+        # (T * B, h, w, c)
+        O = torch.cat(output_list, dim=0)
+        return O, next_vision_state
+
+
+class QueryNetwork(nn.Module):
+    def __init__(self, hidden_size, num_queries, num_keys):
+        super(QueryNetwork, self).__init__()
+        output_size = num_queries * num_keys  # 72 * 4 = 288
+        self.num_queries, self.num_keys = num_queries, num_keys
+        self.model = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, output_size),
+            nn.ReLU(),
+            nn.Linear(output_size, output_size),
+        )
+
+    def forward(self, query):
+        # [N, H] -> [N, num_queries * num_keys]
+        out = self.model(query)
+        # [N, H] -> [N, num_queries, num_keys]
+        return out.view(-1, self.num_queries, self.num_keys)
+
+
+class SpatialBasis:
+    """
+    NOTE: The `height` and `weight` depend on the inputs' size and its resulting size
+    after being processed by the vision network.
+    """
+
+    def __init__(self, height=27, width=20, channels=64):
+        h, w, d = height, width, channels
+
+        p_h = torch.mul(
+            torch.arange(1, h + 1).unsqueeze(1).float(), torch.ones(1, w).float()
+        ) * (np.pi / h)
+        p_w = torch.mul(
+            torch.ones(h, 1).float(), torch.arange(1, w + 1).unsqueeze(0).float()
+        ) * (np.pi / w)
+
+        # TODO: I didn't quite see how U,V = 4 made sense given that the authors form the spatial
+        # basis by taking the outer product of the values.
+        # I am not confident in this step.
+        U = V = 8  # size of U, V.
+        u_basis = v_basis = torch.arange(1, U + 1).unsqueeze(0).float()
+        a = torch.mul(p_h.unsqueeze(2), u_basis)
+        b = torch.mul(p_w.unsqueeze(2), v_basis)
+        out = torch.einsum("hwu,hwv->hwuv", torch.cos(a), torch.cos(b)).reshape(h, w, d)
+        self.S = out
+
+    def __call__(self, X):
+        # Stack the spatial bias (for each batch) and concat to the input.
+        batch_size = X.size()[0]
+        S = torch.stack([self.S] * batch_size).to(X.device)
+        return torch.cat([X, S], dim=3)
+
+
+def spatial_softmax(A):
+    r"""Softmax over the attention map.
+
+    Ignoring batches, this operation produces a tensor of the original shape
+    that has been normalized across its "spatial" dimension `h` and `w`.
+
+    .. math::
+    
+        A^q_{h,w} = exp(A^c_{h,w}) / \sum_{h',w'} A^q_{h',w'}
+
+    Thus, each channel is operated upon separately, and no special meaning is 
+    given to the relative position in the image.
+    """
+    b, h, w, num_queries = A.size()
+    # Flatten A s.t. softmax is applied to each grid (height by width) (not over queries or channels).
+    A = A.view(b, h * w, num_queries)
+    A = F.softmax(A, dim=1)
+    # Reshape A back to original shape.
+    A = A.view(b, h, w, num_queries)
+    return A
+
+
+def apply_attention(A, V):
+    r"""Applies set of attention matrices A over V.
+
+    Ignoring batches the operation produces a tensor of shape [num_queries, num_values]
+    and follows the following equation:
+    
+    .. math::
+    
+        out_{q,v} = \sum_{h,w} A^q_{h,w} * V^v_{h,w}
+
+    Parameters
+    ----------
+    A : [B, h, w, num_queries] 
+    V : [B, h, w, num_values]
+    --> [B, num_queries, num_values]
+    """
+    b, h, w, num_queries = A.size()
+    num_values = V.size(3)
+
+    # [B, h, w, num_queries] -> [B, h * w, num_queries]
+    A = A.reshape(b, h * w, num_queries)
+    # [B, h * w, num_queries] -> [B, num_queries, h * w]
+    A = A.transpose(1, 2)
+    # [B, h, w, num_values] -> [B, h * w, num_values]
+    V = V.reshape(b, h * w, num_values)
+    # [B, h * w, num_values] x [B, num_queries, h * w] -> [B, num_queries, num_values]
+    return torch.matmul(A, V)
+
+
+def splice_core_state(state: Tuple) -> Tuple:
+    return state[0], state[1]
+
+
+def splice_vision_state(state: Tuple) -> Tuple:
+    return state[2], state[3]
+
+  
 class ConvLSTMCell(nn.Module):
     def __init__(self, input_channels, hidden_channels, kernel_size):
         """Initialize stateful ConvLSTM cell.
@@ -331,153 +471,3 @@ class ConvLSTMCell(nn.Module):
             self.Wco = torch.zeros(1, hidden, height, width, requires_grad=True).to(
                 device
             )
-
-
-class VisionNetwork(nn.Module):
-    def __init__(self):
-        super(VisionNetwork, self).__init__()
-        self.cnn = nn.Sequential(
-            # NOTE: The padding choices were not in the paper details, but result in the sizes
-            # mentioned by the authors. We should review these.
-            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=8, stride=4, padding=(1,2)),
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=(2,1)),
-        )
-        self.lstm = ConvLSTMCell(input_channels=64, hidden_channels=128, kernel_size=3)
-
-    def forward(self, X, inputs, vision_lstm_state):
-        T, B, *_ = X.size()
-        X = torch.flatten(X, 0, 1).float()
-        X = self.cnn(X)
-        _, C, H, W = X.size()
-        X = X.view(T, B, C, H, W)
-        output_list = []
-        notdone = (~inputs["done"]).float()
-
-        # Operating over T:
-        for X_t, nd in zip(X.unbind(), notdone.unbind()):
-            # This vector is all 0 if the episode just finished, so it will reset the hidden
-            # state as needed.
-            nd = nd.view(B, 1, 1, 1)
-            vision_lstm_state = tuple((nd * s) for s in vision_lstm_state)
-
-            O_t, vision_state = self.lstm(X_t, vision_lstm_state)
-            output_list.append(O_t)
-        next_vision_state = vision_state
-        # (T * B, h, w, c)
-        O = torch.cat(output_list, dim=0)
-        return O, next_vision_state
-
-
-class QueryNetwork(nn.Module):
-    def __init__(self, hidden_size, num_queries, num_keys):
-        super(QueryNetwork, self).__init__()
-        # TODO: Check which non-linearity the authors used.
-        # TODO: Check if the last layer should be removed.
-        output_size = num_queries * num_keys  # 72 * 4 = 288
-        self.num_queries, self.num_keys = num_queries, num_keys
-        self.model = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, output_size),
-            nn.ReLU(),
-            nn.Linear(output_size, output_size),
-        )
-
-    def forward(self, query):
-        # [N, H] -> [N, num_queries * num_keys]
-        out = self.model(query)
-        # [N, H] -> [N, num_queries, num_keys]
-        return out.view(-1, self.num_queries, self.num_keys)
-
-
-class SpatialBasis:
-    """
-    TODO: Review this function.
-    NOTE: The `height` and `weight` depend on the inputs' size and its resulting size
-    after being processed by the vision network.
-    """
-
-    def __init__(self, height=27, width=20, channels=64):
-        h, w, d = height, width, channels
-
-        p_h = torch.mul(
-            torch.arange(1, h + 1).unsqueeze(1).float(), torch.ones(1, w).float()
-        ) * (np.pi / h)
-        p_w = torch.mul(
-            torch.ones(h, 1).float(), torch.arange(1, w + 1).unsqueeze(0).float()
-        ) * (np.pi / w)
-
-        # TODO: I didn't quite see how U,V = 4 made sense given that the authors form the spatial
-        # basis by taking the outer product of the values.
-        # I am not confident in this step.
-        U = V = 8  # size of U, V.
-        u_basis = v_basis = torch.arange(1, U + 1).unsqueeze(0).float()
-        a = torch.mul(p_h.unsqueeze(2), u_basis)
-        b = torch.mul(p_w.unsqueeze(2), v_basis)
-        out = torch.einsum("hwu,hwv->hwuv", torch.cos(a), torch.cos(b)).reshape(h, w, d)
-        self.S = out
-
-    def __call__(self, X):
-        # Stack the spatial bias (for each batch) and concat to the input.
-        batch_size = X.size()[0]
-        S = torch.stack([self.S] * batch_size).to(X.device)
-        return torch.cat([X, S], dim=3)
-
-
-def spatial_softmax(A):
-    r"""Softmax over the attention map.
-
-    Ignoring batches, this operation produces a tensor of the original shape
-    that has been normalized across its "spatial" dimension `h` and `w`.
-
-    .. math::
-    
-        A^q_{h,w} = exp(A^c_{h,w}) / \sum_{h',w'} A^q_{h',w'}
-
-    Thus, each channel is operated upon separately, and no special meaning is 
-    given to the relative position in the image.
-    """
-    b, h, w, num_queries = A.size()
-    # Flatten A s.t. softmax is applied to each grid (height by width) (not over queries or channels).
-    A = A.view(b, h * w, num_queries)
-    A = F.softmax(A, dim=1)
-    # Reshape A back to original shape.
-    A = A.view(b, h, w, num_queries)
-    return A
-
-
-def apply_attention(A, V):
-    r"""Applies set of attention matrices A over V.
-
-    Ignoring batches the operation produces a tensor of shape [num_queries, num_values]
-    and follows the following equation:
-    
-    .. math::
-    
-        out_{q,v} = \sum_{h,w} A^q_{h,w} * V^v_{h,w}
-
-    Parameters
-    ----------
-    A : [B, h, w, num_queries] 
-    V : [B, h, w, num_values]
-    --> [B, num_queries, num_values]
-    """
-    b, h, w, num_queries = A.size()
-    num_values = V.size(3)
-
-    # [B, h, w, num_queries] -> [B, h * w, num_queries]
-    A = A.reshape(b, h * w, num_queries)
-    # [B, h * w, num_queries] -> [B, num_queries, h * w]
-    A = A.transpose(1, 2)
-    # [B, h, w, num_values] -> [B, h * w, num_values]
-    V = V.reshape(b, h * w, num_values)
-    # [B, h * w, num_values] x [B, num_queries, h * w] -> [B, num_queries, num_values]
-    return torch.matmul(A, V)
-
-
-def splice_core_state(state: Tuple) -> Tuple:
-    return state[0], state[1]
-
-
-def splice_vision_state(state: Tuple) -> Tuple:
-    return state[2], state[3]
