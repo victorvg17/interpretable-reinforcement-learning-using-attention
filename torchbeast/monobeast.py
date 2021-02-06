@@ -309,7 +309,8 @@ def create_buffers(flags, obs_shape, num_actions) -> Buffers:
         reward=dict(size=(T + 1,), dtype=torch.float32),
         done=dict(size=(T + 1,), dtype=torch.bool),
         episode_return=dict(size=(T + 1,), dtype=torch.float32),
-        episode_step=dict(size=(T + 1,), dtype=torch.int32),
+        # victor
+        episode_step=dict(size=(T + 1,), dtype=torch.float32),
         policy_logits=dict(size=(T + 1, num_actions), dtype=torch.float32),
         baseline=dict(size=(T + 1,), dtype=torch.float32),
         last_action=dict(size=(T + 1,), dtype=torch.int64),
