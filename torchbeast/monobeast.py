@@ -238,6 +238,7 @@ def learn(
     """Performs a learning (optimization) step."""
     with lock:
         learner_outputs, unused_state = model(batch, initial_agent_state)
+        logging.info(f"learn() batch[frame] shape: {batch['frame'].shape}")
 
         # Take final value function slice for bootstrapping.
         bootstrap_value = learner_outputs["baseline"][-1]

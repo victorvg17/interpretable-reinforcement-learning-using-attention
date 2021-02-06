@@ -27,8 +27,7 @@ class AttentionNet(nn.Module):
         c_s: int = 64,
         num_queries: int = 4,
     ):
-        """AttentionNet implementing the attention agent.
-        """
+        """AttentionNet implementing the attention agent."""
         super(AttentionNet, self).__init__()
         self.num_queries = num_queries
         self.num_actions = num_actions
