@@ -14,60 +14,53 @@ from utils.util_functions import (
     splice_vision_state,
 )
 
-"""
-AttentionNet is a pytorch reimpl. of the following paper for the NeurIPS reproducibility challenge.
 
-@article{mott2019towards,
-  title={Towards Interpretable Reinforcement Learning Using Attention Augmented Agents},
-  author={Mott, Alex and Zoran, Daniel and Chrzanowski, Mike and Wierstra, Daan and Rezende, Danilo J},
-  journal={arXiv preprint arXiv:1906.02500},
-  year={2019}
-}
-"""
-
-
-class AttentionNet(nn.Module):
+class AttentionNetMinAtar(nn.Module):
     def __init__(
         self,
         num_actions: int,
-        hidden_size: int = 256,
-        c_v: int = 120,
-        c_k: int = 8,
-        c_s: int = 64,
+        hidden_size: int = 64,
+        c_v: int = 30,
+        c_k: int = 2,
+        c_s: int = 16,
         num_queries: int = 4,
     ):
-        """AttentionNet implementing the attention agent."""
-        super(AttentionNet, self).__init__()
+        super(AttentionNetMinAtar, self).__init__()
         self.num_queries = num_queries
         self.num_actions = num_actions
         self.hidden_size = hidden_size
         self.c_v, self.c_k, self.c_s, self.num_queries = c_v, c_k, c_s, num_queries
-        self.num_keys = c_k + c_s
-        self.num_values = c_v + c_s
+        self.num_keys = c_k + c_s  # 18 = 72/4
+        self.num_values = c_v + c_s  # 46 = 184/4
 
         # This is a function of the CNN hp and the input image size.
-        self.height, self.width = 27, 20
-
-        self.vision = VisionNetwork()
-        self.query = QueryNetwork(hidden_size, num_queries, self.num_keys)
-        self.spatial = SpatialBasis(self.height, self.width)
+        self.height, self.width = 6, 6
+        # in_channels depend on the selected MinAtar game. For Breakout, 4
+        self.vision = VisionNetwork(in_channels=4)
+        self.query = QueryNetwork(
+            hidden_size=self.hidden_size,
+            num_queries=self.num_queries,
+            num_keys=self.num_keys,
+        )
+        self.spatial = SpatialBasis(height=self.height, width=self.width)
 
         self.answer_processor = nn.Sequential(
-            # 1043 x 512
+            # 263*128
             nn.Linear(
-                self.num_values * num_queries
-                + self.num_keys * num_queries
+                self.num_values * self.num_queries
+                + self.num_keys * self.num_queries
                 + 1
                 + self.num_actions,
-                hidden_size * 2,  # 512, HP from the authors.
+                self.hidden_size * 2,  # 128
             ),
             nn.ReLU(),
-            nn.Linear(hidden_size * 2, hidden_size),
+            # 128*64
+            nn.Linear(self.hidden_size * 2, hidden_size),
         )
 
-        self.policy_core = nn.LSTMCell(hidden_size, hidden_size)
-        self.policy_head = nn.Sequential(nn.Linear(hidden_size, num_actions))
-        self.values_head = nn.Sequential(nn.Linear(hidden_size, 1))
+        self.policy_core = nn.LSTMCell(self.hidden_size, self.hidden_size)
+        self.policy_head = nn.Linear(self.hidden_size, self.num_actions)
+        self.values_head = nn.Linear(self.hidden_size, 1)
 
     def initial_state(self, batch_size):
         core_zeros = torch.zeros(batch_size, self.hidden_size).float()
@@ -83,7 +76,7 @@ class AttentionNet(nn.Module):
 
     def forward(self, inputs, prev_state):
 
-        # 1 (a). Vision.
+        # 1 (a). Vision core.
         # --------------
 
         # [T, B, C, H, W].
@@ -113,9 +106,11 @@ class AttentionNet(nn.Module):
         V = V.view(T, B, h, w, -1)
         # -> [T, B, 1]
         notdone = (~inputs["done"]).float().view(T, B, 1)
+
         # -> [T, B, 1, num_actions]
+        prev_action = inputs["last_action"].view(T * B)
         prev_action = (
-            F.one_hot(inputs["last_action"].view(T * B), self.num_actions)
+            F.one_hot(prev_action, self.num_actions)
             .view(T, B, 1, self.num_actions)
             .float()
         )
@@ -125,7 +120,6 @@ class AttentionNet(nn.Module):
         # 3. Operate over the T time steps.
         # ---------------------------------
         # NOTE: T = 1 when 'act'ing and T > 1 when 'learn'ing.
-
         for K_t, V_t, prev_reward_t, prev_action_t, nd_t in zip(
             K.unbind(),
             V.unbind(),
@@ -138,9 +132,6 @@ class AttentionNet(nn.Module):
             # --------------
             # [B, hidden_size] -> [B, num_queries, num_keys]
             Q_t = self.query(prev_output)
-            # NOTE: The queries and keys don't have intrinsic meaning -- they're trained
-            # to be relevant. Furthermore, the sizing relies on selecting `smart` hidden
-            # and output sizes in the QueryNetwork.
 
             # B. Answer.
             # ----------
@@ -163,12 +154,11 @@ class AttentionNet(nn.Module):
 
             # C. Policy.
             # ----------
-            # NOTE: nd_t is 0 when episode is done, 1 otherwise. Thus, this resets the state
-            # as episodes finish.
             core_state = tuple((nd_t * s) for s in core_state)
 
             # -> [B, hidden_size]
-            prev_output, _ = core_state = self.policy_core(core_input, core_state)
+            core_state = self.policy_core(core_input, core_state)
+            prev_output, _ = core_state
             core_output_list.append(prev_output)
         next_core_state = core_state
         # -> [T * B, hidden_size]
@@ -190,7 +180,7 @@ class AttentionNet(nn.Module):
             action = torch.argmax(logits, dim=1)
 
         # Format for torchbeast.
-        # [T * B, num_actions] -> [T * B, num_actions]
+        # [T * B, num_actions] -> [T, B, num_actions]
         policy_logits = logits.view(T, B, self.num_actions)
         # [T * B, 1] -> [T, B]
         baseline = values.view(T, B)
@@ -206,19 +196,22 @@ class AttentionNet(nn.Module):
 
 
 class VisionNetwork(nn.Module):
-    def __init__(self):
+    def __init__(self, in_channels):
         super(VisionNetwork, self).__init__()
+        self.in_channels = in_channels
+        # ip size=10*10*in_channels, op size=8*8*16
         self.cnn = nn.Sequential(
-            # NOTE: The padding choices were not in the paper details, but result in the sizes
-            # mentioned by the authors. We should review these.
+            # ip size=10*10*in_channels, op size=8*8*16
             nn.Conv2d(
-                in_channels=3, out_channels=32, kernel_size=8, stride=4, padding=(1, 2)
+                in_channels=self.in_channels,
+                out_channels=16,
+                kernel_size=3,
+                stride=1,
             ),
-            nn.Conv2d(
-                in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=(2, 1)
-            ),
+            # ip size=8*8*16, op size=6*6*32
+            nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1),
         )
-        self.lstm = ConvLSTMCell(input_channels=64, hidden_channels=128, kernel_size=3)
+        self.lstm = ConvLSTMCell(input_channels=16, hidden_channels=32, kernel_size=3)
 
     def forward(self, X, inputs, vision_lstm_state):
         T, B, *_ = X.size()
@@ -227,6 +220,7 @@ class VisionNetwork(nn.Module):
         _, C, H, W = X.size()
         X = X.view(T, B, C, H, W)
         output_list = []
+        # shape: (T, B, 1)
         notdone = (~inputs["done"]).float()
 
         # Operating over T:

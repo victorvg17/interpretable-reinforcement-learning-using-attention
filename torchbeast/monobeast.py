@@ -36,6 +36,12 @@ from torchbeast.core import prof
 from torchbeast.core import vtrace
 
 from torchbeast import attention_net
+from utils.util_functions import (
+    compute_baseline_loss,
+    compute_entropy_loss,
+    compute_policy_gradient_loss,
+    create_env,
+)
 
 # yapf: disable
 parser = argparse.ArgumentParser(description="PyTorch Scalable Agent")
@@ -53,6 +59,9 @@ parser.add_argument("--disable_checkpoint", action="store_true",
                     help="Disable saving checkpoint.")
 parser.add_argument("--savedir", default="~/logs/torchbeast",
                     help="Root dir where experiment data will be saved.")
+# victor: parse checkpoint dir for continuing learning
+parser.add_argument("--checkpoint_file", default=None, 
+                    help="checkpoint-file for training continuing")
 parser.add_argument("--num_actors", default=4, type=int, metavar="N",
                     help="Number of actors (default: 4).")
 parser.add_argument("--total_steps", default=100000, type=int, metavar="T",
@@ -103,27 +112,6 @@ logging.basicConfig(
 )
 
 Buffers = typing.Dict[str, typing.List[torch.Tensor]]
-
-
-def compute_baseline_loss(advantages):
-    return 0.5 * torch.sum(advantages ** 2)
-
-
-def compute_entropy_loss(logits):
-    """Return the entropy loss, i.e., the negative entropy of the policy."""
-    policy = F.softmax(logits, dim=-1)
-    log_policy = F.log_softmax(logits, dim=-1)
-    return torch.sum(policy * log_policy)
-
-
-def compute_policy_gradient_loss(logits, actions, advantages):
-    cross_entropy = F.nll_loss(
-        F.log_softmax(torch.flatten(logits, 0, 1), dim=-1),
-        target=torch.flatten(actions, 0, 1),
-        reduction="none",
-    )
-    cross_entropy = cross_entropy.view_as(advantages)
-    return torch.sum(cross_entropy * advantages.detach())
 
 
 def act(
@@ -238,7 +226,7 @@ def learn(
     """Performs a learning (optimization) step."""
     with lock:
         learner_outputs, unused_state = model(batch, initial_agent_state)
-        logging.info(f"learn() batch[frame] shape: {batch['frame'].shape}")
+        # logging.info(f"learn() batch[frame] shape: {batch['frame'].shape}")
 
         # Take final value function slice for bootstrapping.
         bootstrap_value = learner_outputs["baseline"][-1]
@@ -402,6 +390,17 @@ def train(flags):  # pylint: disable=too-many-branches, too-many-statements
         return 1 - min(epoch * T * B, flags.total_steps) / flags.total_steps
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    # victor: load state_dict from checkpoint_file
+    if flags.checkpoint_file is not None:
+        logging.info(
+            f"Loading model, optimizer, scheduler from checkpoint: {flags.checkpoint_file}"
+        )
+        checkpoint_loaded = torch.load(flags.checkpoint_file, map_location=flags.device)
+        learner_model.load_state_dict(checkpoint_loaded["model_state_dict"])
+        optimizer.load_state_dict(checkpoint_loaded["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint_loaded["scheduler_state_dict"])
+
+    learner_model.train()
 
     logger = logging.getLogger("logfile")
     stat_keys = [
@@ -590,25 +589,6 @@ def test(flags, num_episodes: int = 10):
 
 
 Net = attention_net.AttentionNet
-
-
-def create_deepmind_env(flags):
-    return atari_wrappers.wrap_pytorch(
-        atari_wrappers.wrap_deepmind(
-            atari_wrappers.make_atari(flags.env),
-            clip_rewards=False,
-            frame_stack=True,
-            scale=False,
-        )
-    )
-
-
-def create_env(flags):
-    return atari_wrappers.wrap_pytorch(
-        atari_wrappers.wrap_interp(
-            atari_wrappers.make_atari(flags.env),
-        )
-    )
 
 
 def main(flags):
